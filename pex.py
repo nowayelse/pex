@@ -29,7 +29,7 @@ def setlsid(func):
         global lsid
         if sid != '':
             lsid = sid
-        func(*args, sid=sid, **kwargs)
+        return func(*args, sid=sid, **kwargs)
     return wrapper
 
 class _spawn(spawn):
@@ -39,10 +39,10 @@ class _spawn(spawn):
         self.exitcmds = ['exit', 'logout', 'quit']
         spawn.__init__(self, cmd, maxread=500000, encoding='utf-8')
         self.setwinsize(1000, 1000)
-        self.delaybeforesend = 0
+        self.delaybeforesend = 0.0
+        self.delayafterread = 0.0
         self.ignorecase
         self.logfile_read = sys.stdout
-        #self.prompt = self.hostname
     
     def se(self, *args, **kwargs):
         se(*args, sid=self.sid, **kwargs)
@@ -91,16 +91,15 @@ class buffer:
         return buffer(sid=sid).out[-1]+sids[sid].after
 
 
-def connect (cmd, sid=-1, tries=3,
-             con_roe=False, # return False on error and do not exit
-             con_wfn=False, # waits for netconf anyway
-             hostname='EOS', login='admin', password='password',
-             **kwargs):
+def connect(cmd, sid=-1, tries=3,
+            con_roe=False,  # Retrurn on error if True else exits
+            con_wfn=False,  # Ignore netconf issues if True, else reconnect
+            hostname='EOS', login='admin', password='password', **kwargs):
     '''ex.: connect('192.168.17.26', hostname='EOS#')'''
     global sids, lsid
     
     def sp():
-        return _spawn(scmd, pcmd=cmd, sid=sid,
+        return _spawn(scmd, pcmd=cmd, sid=sid, addr=addr,
                        login=login, password=password, hostname=hostname)
     
     def parsecmd(cmd):
@@ -108,37 +107,18 @@ def connect (cmd, sid=-1, tries=3,
         try:
             tproc, taddr, tport = re.findall(pat, cmd)[0]
         except IndexError:
-            exit('Command line parse error: %s' % cmd)
+            exit(f'Command line parse error: {cmd}')
         proc = tproc or 'telnet'
         addr = taddr
         try:
             ip_address(addr)
         except ValueError:
-            exit('Command line address error: {}'.format(addr))
+            exit(f'Command line address error: {addr}')
         port = tport or ('23' if proc == 'telnet' else '22')
         if proc == 'telnet':
-            return addr, '{} {} {}'.format(proc, addr, port)
+            return addr, f'{proc} {addr} {port}'
         else:
-            return addr, '{} {}@{} -p{}'.format(proc, login, addr, port)
-    
-    def errconnect(code=''):
-        nonlocal append, error
-        if code == 'STOP':
-            exit('Route or DNS issue')
-        elif code == 'PING':
-            append += 1
-        elif code == 'NETCONF':
-            if con_wfn:
-                return
-            else:
-                append += 1
-                if tries-append > 0:
-                    reconnect(tries=tries-append)
-        elif code in ['EOF', 'TIMEOUT', 'ERROR']:
-            append += 1
-        else:
-            exit('Unknown error during connect, needs to debug.')
-        error = code
+            return addr, f'{proc} {login}@{addr} -p{port}'
     
     '''validate'''
     if type(cmd) != str:
@@ -152,73 +132,84 @@ def connect (cmd, sid=-1, tries=3,
     
     '''init vars'''
     addr, scmd = parsecmd(cmd)
-    error = ''
-    append = 0
-    nologin = False
-    nopassword = False
     
-    while append < tries:
+    for append in range(tries):
+        error = ''
+        nologin = False
+        nopassword = False
+        logged = False
         if not pinger(addr):
-            errconnect('PING')
-        else:
-            try:
-                if sid < 0:
-                    sid = len(sids)
-                    sids.append(sp())
-                elif sid >= len(sids):
-                    exsid = sid
-                    sid = len(sids)
-                    sids.append(sp())
-                    if sid > len(sids):
-                        print('Sid is not {}, but {}'.format(exsid, sid))
-                else:
-                    sids[sid] = sp()
-            except Exception as e:
-                exit('Spawn error: {}'.format(e))
-            lsid = sid
-            setprompt()
-            break
-    while append < tries:
+            error = 'PING'
+            continue
         try:
-            r = sids[sid].expect(['(nknown host)|(not known)',
-                            'o route to host',
-                            'onnection refused',
-                            'closed by foreign host',
-                            'sure you want to continue connecting',
-                            '(ogin: ?$)|(ame: ?$)',
-                            'sword: ?$',
-                            'etconf server doesn',
-                            sids[sid].prompt], timeout=15)
-        except EOF:
-            errconnect('EOF')
-        except TIMEOUT:
-            errconnect('TIMEOUT')
-        if r in [0,1]:
-            errconnect('STOP')
-        if r in [2,3]:
-            errconnect('ERROR')
-        elif r == 4:
-            sids[sid].sendline('yes')
-        elif r == 5:
-            if nologin:
-                exit('Login {}/{} incorrect'.
-                    format(sids[sid].login, sids[sid].password))
+            if sid < 0:
+                sid = len(sids)
+                sids.append(sp())
+            elif sid >= len(sids):
+                exsid = sid
+                sid = len(sids)
+                sids.append(sp())
+                if sid > len(sids):
+                    print(f'Sid is not {exsid}, but {sid}')
             else:
-                nologin = True
-            sids[sid].sendline(sids[sid].login)
-        elif r == 6:
-            if nopassword:
-                exit('Login {}/{} incorrect'.
-                    format(sids[sid].login, sids[sid].password))
+                sids[sid] = sp()
+        except Exception as e:
+            exit(f'Spawn error: {e}')
+        lsid = sid
+        setprompt()
+        exps = ['(nknown host)|(not known)',
+                'o route to host',
+                'onnection refused',
+                'closed by foreign host',
+                'sure you want to continue connecting',
+                '(ogin: ?$)|(ame: ?$)',
+                'sword: ?$',
+                sids[sid].prompt]
+        if not con_wfn:
+            exps.append('etconf server doesn')
+        r = error = ''
+        while not error and not logged:
+            try:
+                r = sids[sid].expect(exps, timeout=50)
+            except EOF:
+                error = 'EOF'
+            except TIMEOUT:
+                error = 'TIMEOUT'
+            if r in [0,1]:
+                exit('Route or DNS issue')
+            if r in [2,3]:
+                error = 'REFUSED'
+                sleepx(5)
+            elif r == 4:
+                sids[sid].send('yes\r')
+            elif r == 5:
+                if nologin:
+                    error = 'AUTH'
+                else:
+                    nologin = True
+                    sids[sid].sendline(sids[sid].login)
+            elif r == 6:
+                if nopassword:
+                    error = 'AUTH'
+                else:
+                    nologin = True
+                    nopassword = True
+                    sids[sid].sendline(sids[sid].password)
+            elif r == 7:
+                logged = True
+            elif r == 8:
+                error = 'NETCONF'
+        else:
+            if logged:
+                break
             else:
-                nopassword = True
-            sids[sid].sendline(sids[sid].password)
-        elif r == 7:
-            errconnect('NETCONF')
-        elif r == 8:
-            error=''
-            break
+                continue
     if error:
+        if error == 'AUTH':
+            try:
+                se('^c$')
+            except: pass
+            sids.remove(sids[sid])
         if con_roe:
             return False
         else:
@@ -228,7 +219,7 @@ def connect (cmd, sid=-1, tries=3,
 
 @checksid
 @setlsid
-def reconnect (cmd='', sid='', login='', password='', **kwargs):
+def reconnect(cmd='', sid='', login='', password='', **kwargs):
     global sids
     cmd = cmd if cmd else sids[sid].pcmd
     try:
@@ -245,14 +236,18 @@ def setprompt(sid='', hn=''):
         hn = sids[sid].hostname
     name,sn = (re.findall('(\S+)(\)|\#|\>|\$|\~)', hn) or [(hn, '')])[0]
     if sn:
-        sids[sid].prompt = name+r'((?!\n).)*'+sn
+        sids[sid].prompt = name+r'(?:(?!\n).)*'+sn
     else:
-        sids[sid].prompt = name+r'((?!\n).)*(\)|\#|\>|\$|\~)'
+        sids[sid].prompt = name+r'(?:(?!\n).)*(\)|\#|\>|\$|\~)'
     sids[sid].hname=name
 
 @checksid
+def getprompt(sid='', hn=''):
+    return sids[sid].prompt
+
+@checksid
 @setlsid
-def se (*args, sid='', flags='30', timeout=30):
+def se(*args, sid='', flags='30'):
     if sid >= len(sids):
         exit('Sending to unopened sid: '+str(sid))
     if len(args) == 0:
@@ -260,24 +255,37 @@ def se (*args, sid='', flags='30', timeout=30):
     elif len(args) % 2 == 1:
         args += (None,)
     pairs = zip(*[iter(args)]*2)
-    for id,(cmds,exps) in enumerate(pairs):
+    for id, (cmds,exps) in enumerate(pairs):
         if type(cmds) != list:
             cmds = str(cmds).strip().split('\n')
-        cmds = [str(i).strip() for i in cmds]
+        cmds = [str(i).strip() for i in cmds if i]
+        ans = 0
+        err = ''
         for cmd in cmds:
             se_noexpect = False  # .$
+            se_resetexp = False  # .#
             se_nocarret = False  # -c .
             se_control = False   # ^.
             se_sendslow = False  # -s .
+            se_noexit = False    # -x .
+            se_timeout = 600     # -t\d .
             se_interval = 0.01
             
-            pfx,_,pcmd = cmd.partition(' ')
+            ''' Parse flags '''
+            pfx = pcmd = ''
+            pfx, _, pcmd = cmd.partition(' ')
             if pfx[0] == '-':
                 cmd = pcmd
                 if 'c' in pfx:
                     se_nocarret = True
                 if 's' in pfx:
                     se_sendslow = True
+                if 'x' in pfx:
+                    se_noexit = True
+                if 't' in pfx:
+                    se_timeout = (re.findall(r'\d+', pfx) or [se_timeout])[0]
+            else:
+                pfx = ''
             if cmd[0] == '^':
                 se_control = True
                 se_nocarret = True
@@ -285,7 +293,15 @@ def se (*args, sid='', flags='30', timeout=30):
             if cmd[-1] == '$':
                 se_noexpect = True
                 cmd = cmd[:-1]
+            elif 'e' in pfx:
+                se_noexpect = True
+            elif cmd[-1] == '#':
+                se_resetexp = True
+                cmd = cmd[:-1]
+            elif 'r' in pfx:
+                se_resetexp = True
             
+            ''' Sending '''
             try:
                 if se_control:
                     sids[sid].sendcontrol(cmd)
@@ -300,32 +316,52 @@ def se (*args, sid='', flags='30', timeout=30):
             except Exception as e:
                 exit('Send error: '+e)
             
-            if se_noexpect: continue
+            ''' Expecting '''
+            ans = -1
+            err = ''
+            if se_noexpect:
+                ans = 0
+                continue
             try:
                 if exps == None:
-                    sids[sid].expect(sids[sid].prompt, timeout=int(timeout))
+                    ans = sids[sid].expect(sids[sid].prompt, timeout=int(se_timeout))
                 else:
-                    i = sids[sid].expect(exps, timeout=int(timeout))
-                if type(exps) == list and len(exps) > 1:
-                    if id < len(pairs)-1:
-                        if len(cmds) > 1 or len(list(pairs)) > 1:
-                            print('Expect is list! Next S-E will not be performed')
-                    return i
+                    ans = sids[sid].expect(exps, timeout=int(se_timeout))
             except EOF:
                 if cmd in sids[sid].exitcmds:
-                    error = 'exit'
+                    err = 'EXITCMD'
                 else:
-                    error = 'eof'
+                    err = 'EOF'
             except TIMEOUT:
-                error = 'timeout'
-                exit('TIMEOUT = {}'.format(timeout))
+                err = 'timeout'
+                exit(f'TIMEOUT = {se_timeout}')
             else:
                 sids[sid].last = buffer.prompt()
             finally:
                 sids[sid].logfile_send = StringIO('')
+                if se_resetexp:
+                    sleep(0.5)
+                    expclear()
+                if type(exps) == list and len(exps) > 1:
+                    if id < len(list(pairs))-1:
+                        if len(cmds) > 1 or len(list(pairs)) > 1:
+                            print('Expect list! Next SE will not be performed')
+                    return ans
+    if ans >= 0:
+        return ans
+    elif se_noexit or err == 'EXITCMD':
+        return False
+    else:
+        exit(f'Expect: {err}')
+
+@checksid
+def expclear(ex=r'.*', sid=''):
+    sids[sid].expect(ex, timeout=1)
 
 def switchecho(val=''):
     global lsid, sids
+    if lsid >= len(sids):
+        exit('Sending to unopened sid: '+str(lsid))
     states = [sys.stdout, None]
     states.remove(sids[lsid].logfile_read)
     if val == True:
@@ -349,157 +385,52 @@ def prompt(sid=''):
     return sids[sid].prompt
 
 def sleepx(sec=60, msg=''):
-    print('Sleep {} seconds. {}'.format(sec, msg))
+    print(f'Sleep {sec} seconds. {msg}')
     for i in range(sec):
-        print('{} seconds left\r'.format(sec-i), end='', flush=True)
+        print(f'{sec-i} seconds left')
         sleep(1)
+        print('\x1b[A\x1b[K', end='', flush=True)
 
 def pinger(host, timeout=1):
-    s,_ = getstatusoutput('ping -c1 -w{} {}'.format(timeout, host))
+    s,_ = getstatusoutput(f'ping -c1 -w{timeout} {host}')
     return True if s == 0 else False
 
 def incrip(addr, i=1):
     return str(ip_address(addr)+i)
 
+def incrmac(mac, i=1):
+     return re.sub(r'(..)(?!$)', r'\1:', f'{(int(mac.replace(":", ""), 16) + i):012X}')
 
-''' ME5k specific '''
+def inbuffer(txt):
+    try:
+        txt = re.compile(r'(?i)'+txt)
+    except:
+        txt = re.compile(r'(?i)'+re.escape(txt))
+    return len(re.findall(txt, buffer.all()))
 
-def me5k_confview(f):
-    def wrap(*args, **kwargs):
-        if re.search(sids[lsid].hname+r'\(config', buffer.prompt()):
-            se('-ns do ')
-        f(*args, **kwargs)
-    return wrap
+def printf(file, text):
+    file.write(text)
+    print(text, end='', flush=True)
 
-def me5k_shellprompt(sid=''):
-    global lsid, sids
-    if sid == '':
-        sid = lsid
-    else:
-        lsid = sid
-    hn = sids[sid].hostname
-    name,sn = (re.findall('(\S+)(\)|\#|\>|\$|\~)', hn) or [(hn, '')])[0]
-    sids[sid].prompt = r'\[root@'+name+r' \S+\]'
+class t:
+    def u(n=1):                 # up
+        return f'\x1b[{n}A'
+    def d(n=1):                 # down
+        return f'\x1b[{n}B'
+    def f(n=1):                 # forward
+        return f'\x1b[{n}C'
+    def b(n=1):                 # backward
+        return f'\x1b[{n}D'
+    def p(n=1):                 # prev
+        return f'\x1b[{n}F'
+    def n(n=1):                 # next
+        return f'\x1b[{n}E'
+    def m(n=1, m=1):            # move
+        return f'\x1b[{n};{m}H'
+    e = '\x1b[1J'               # erase
+    s = '\x1b[s'                # save
+    r = '\x1b[r'                # restore
 
-class me5k_rootshell(): 
-    def __enter__(self): 
-        me5k_shellprompt()
-        se('rootshell', 'assword:', 'password') 
-    def __exit__(self, *args): 
-        setprompt()
-        se('exit')
-
-@checksid
-@setlsid
-def me5k_shellprompt(sid=''):
-    hn = sids[sid].hostname
-    name,sn = (re.findall('(\S+)(\)|\#|\>|\$|\~)', hn) or [(hn, '')])[0]
-    sids[sid].prompt = r'\[root@'+name+r' \S+\]'
-
-def me5k_searchlogs(text):
-    with me5k_rootshell():
-        se('grep -E "{}" /var/log/syslog/buffer* 2>/dev/null | head -5'
-            .format(text))
-        return True if buffer() else False
-
-def me5k_getlogs():
-    me5k_confview(se)('show tech-support')
-    me5k_confview(se)('copy fs://logs tftp://{}/logs/tech-support/ vrf mgmt-intf'.format(host))
-
-def me5k_switchover():
-    se('redundancy switchover', 'with the switchover', 'y')
-    var = r'(ot all services)|(is not allowed on slave)|(lave fmc is not found)'
-    ans = re.search(var, buffer.all())
-    if ans:
-        return ans.lastindex
-    else:
-        return 0
-
-def me5k_showtree(cmd):
-    
-    def gethelp(cmds):
-        return re.findall(r'  (\S(?:.*\S)?)  ', cmds)
-    
-    def parsehelp(cmds):
-        subs = {
-            'IF    <unit>/<dev>/<port>': ['0/0/1'],
-            'SUBIF <unit>/<dev>/<port>.<sub-id>': ['0/0/1.10'],
-            'IF <unit>/<dev>/<port> or SUBIF <unit>/<dev>/<port>.<vid>': ['0/0/1', '0/0/1.10'],
-            'IF <unit>/<dev>/<port> || SUBIF <unit>/<dev>/<port>.<sub-id>': ['0/0/1', '0/0/1.10'],
-            'IF    <bundle-id>': ['1'],
-            'SUBIF <bundle-id>.<sub-id>': ['1.10'],
-            'IF <bundle-id> or SUBIF <bundle-id>.<bundle-subid>': ['1', '1.10'],
-            'Loopback ID (1-8000)': ['1'],
-            'MGMT    <unit>/fmc<dev>/<port>': ['0/fmc0/1'],
-            'IPv4 (A.B.C.D)': ['10.0.0.30'],
-            'IPv4 (A.B.C.D/N)': ['10.0.0.30/32'],
-            'IPv4 Multicast (A.B.C.D)': ['225.54.205.135'],
-            'IPv6 (X:X:X:X::X)': ['2001::1'],
-            'IPv6 (X:X:X:X::X/N)': ['2001::1/64'],
-            'IPv4 (A.B.C.D) or IPv6 (X:X:X:X::X)': ['10.0.0.30'],
-            'VRF name WORD (1-31)': ['test'],
-            'all | VRF name WORD (1-31)': ['all', 'test'],
-            'RD AS:Nr(0-4294967295:0-65535)': ['4294967295:65535'],
-            'RD AS:Nr(0-65535:0-4294967295)': ['65535:4294967295'],
-            'RD IPv4:Nr(0-65535)': ['10.0.0.134:0'],
-            'RT': ['65535:4294967295', '4294967295:65535', '10.0.0.134:0'],
-            'A.B.C.D:N': ['10.0.0.111:0'],
-            'INTEGER': ['1'],
-            'String': ['admin'],
-            'WORD': ['test'],
-            'TUNNEL ID': ['1'],
-            'Router ID': ['10.0.0.111'],
-            'Area id (A.B.C.D)': ['0.0.0.0'],
-            'MAC (XX:XX:XX:XX:XX:XX)': ['00:11:22:33:44:55'],
-            '(1-': ['1'],
-            '(0-': ['1'],
-            '<unit>/<dev> | all': ['all', '0/0'],
-            '<unit>/<dev>': ['0/0'],
-            'SLOT <unit>/<dev>': ['0/0'],
-            'SLOT <unit>/fmc<dev>': ['0/fmc0'],
-            'Link state id': ['10.0.0.111'],
-            'Period': [],
-            'Location': []
-        }
-        out = [] 
-        if '<cr>' in cmds:
-            out.append('<cr>')
-        cmds = [cmd for cmd in cmds if cmd not in last]
-        for cmd in cmds:
-            for key in subs:
-                if cmd.startswith(key):
-                    out += subs[key]
-                    break
-            else:
-                out.append(cmd.split()[0])
-        return out
-    
-    def shownext(helps):
-        nonlocal cmds
-        if helps == []:
-            cmds.append('! '+buffer.cmd().strip())
-        for cmd in parsehelp(helps):
-            if cmd in ['fortygigabitethernet', 'gigabitethernet', 'hundredgigabitethernet']:
-                continue
-            if cmd == '<cr>':
-                cmds.append(buffer.cmd().strip())
-            else:
-                se('-c {} ?'.format(cmd))
-                shownext(gethelp(buffer.all()))
-        se('^w$')
-    
-    cmds = []
-    last = ['|', '<cr>']
-    if type(cmd) == str:
-        cmd = [cmd]
-    for i in cmd:
-        se('-c show {} ?'.format(i))
-        shownext(gethelp(buffer.all()))
-        se('^c')
-    return cmds
-
-
-
-host = '192.168.16.22'
+os.environ["TERM"] = "dumb"
 lsid = 0
 sids = []
