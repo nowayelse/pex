@@ -27,11 +27,6 @@ def _intf(self, a=0):
     return ip_interface(str(self[a])+'/'+str(self.prefixlen))
 
 @setmethod(IPv4Network)
-def _near(self, o=1):
-    return ip_network(str(ip_address(self.network_address) + \
-        o*self.num_addresses)+'/'+str(self.prefixlen))
-
-@setmethod(IPv4Network)
 def ___add__(self, o=1):
     return ip_network(str(ip_address(self.network_address) + \
         o*self.num_addresses)+'/'+str(self.prefixlen))
