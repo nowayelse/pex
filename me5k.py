@@ -1,7 +1,7 @@
 #!/usr/bin/python3
 # -*- coding: utf-8 -*-
 
-from pex import *
+from python.pex import *
 
 def tping(addr, count=10):
     s,_ = getstatusoutput(f'for i in `seq 1 {count}`; '
@@ -10,20 +10,20 @@ def tping(addr, count=10):
                            '&& break; done')
     return True if s == 0 else False
 
-def me5k_isrootview():
+def isrootview():
     return bool(re.search(sids[lsid].hname+r'\(config', buffer.prompt()))
 
-def me5k_isoffline():
+def isoffline():
     return bool(re.search(r'offline mode', buffer.prompt()))
 
-def me5k_confview(f):
+def confview(f):
     def wrap(*args, **kwargs):
-        if me5k_isrootview():
+        if isrootview():
             se('-ns do ')
         f(*args, **kwargs)
     return wrap
 
-def me5k_shellprompt(sid=''):
+def shellprompt(sid=''):
     global lsid, sids
     if sid == '':
         sid = lsid
@@ -33,10 +33,10 @@ def me5k_shellprompt(sid=''):
     name,sn = (re.findall('(\S+)(\)|\#|\>|\$|\~)', hn) or [(hn, '')])[0]
     sids[sid].prompt = r'\[root@'+name+r' \S+\]'
 
-class me5k_rootshell(): 
+class rootshell(): 
     def __enter__(self): 
-        me5k_shellprompt()
-        me5k_confview(se)('rootshell', 'assword:', 'password')
+        shellprompt()
+        confview(se)('rootshell', 'assword:', 'password')
         if inbuffer('Authentication'):
             exit('Check rootshell password or SE logic')
     def __exit__(self, *args): 
@@ -45,22 +45,22 @@ class me5k_rootshell():
 
 @checksid
 @setlsid
-def me5k_shellprompt(sid=''):
+def shellprompt(sid=''):
     hn = sids[sid].hostname
     name,sn = (re.findall('(\S+)(\)|\#|\>|\$|\~)', hn) or [(hn, '')])[0]
     sids[sid].prompt = r'\[root@'+name+r' \S+\]'
 
-def me5k_searchlogs(text):
-    with me5k_rootshell():
+def inbufferlog(text):
+    with rootshell():
         se(f'grep -E "{text}" /var/log/syslog/buffer* 2>/dev/null | head -5')
         return True if buffer.all() else False
 
-def me5k_getlogs(msg=''):
-    me5k_confview(se)('show tech-support')
-    me5k_confview(se)(f'copy fs://logs tftp://{host}/logs/tech-support/ vrf mgmt-intf')
+def getlogs(msg=''):
+    confview(se)('show tech-support')
+    confview(se)(f'copy fs://logs tftp://{host}/logs/tech-support/ vrf mgmt-intf')
     print(f'\nError: {msg}')
 
-def me5k_switchover():
+def switchover():
     se('redundancy switchover', 'with the switchover', 'y')
     var = r'(ot all services)|(is not allowed on slave)|(lave fmc is not found)'
     ans = re.search(var, buffer.all())
@@ -69,7 +69,7 @@ def me5k_switchover():
     else:
         return 0
 
-def me5k_showtree(cmd):
+def showtree(cmd):
     
     def gethelp(cmds):
         return re.findall(r'  (\S(?:.*\S)?)  ', cmds)
@@ -152,14 +152,14 @@ def me5k_showtree(cmd):
         se('^c')
     return cmds
 
-def me5k_entercfg(filename, commitonexit=False, exitonerror=True):
+def entercfg(filename, commitonexit=False, exitonerror=True):
     if not os.path.exists(filename):
         print(f'\nFile {filename} not exist')
         return False
     with open(filename) as file:
         cmds = [i.rstrip('\n') for i in file.readlines()]
     flen = len(cmds)
-    if not me5k_isrootview():
+    if not isrootview():
         se('config')
     tstart = now()
     for num, cmd in enumerate(cmds):
@@ -173,7 +173,7 @@ def me5k_entercfg(filename, commitonexit=False, exitonerror=True):
             se('clear')
             print('\nCommand error')
             return False
-        if not me5k_isrootview():
+        if not isrootview():
             print('\nSuddenly exited from root view')
             return False
         if (commitonexit and cmd.startswith('exit')) or num == flen-1:
