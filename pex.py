@@ -5,16 +5,39 @@ import sys
 import os
 import re
 from time import sleep, time as now
-from ipaddress import ip_address, ip_network
+from ipaddress import ip_address, ip_network, ip_interface, IPv4Network
 from io import StringIO
 from subprocess import getoutput, getstatusoutput
 from pkg_resources import parse_version
+
 try:
     from pexpect import *
     if parse_version(__version__) < parse_version('4.7.0'):
         exit('pexpect version is lower than 4.7.0, please upgrade')
 except ImportError:
     exit('pexpect not found, install pexpect 4.7.0 or newer')
+
+def setmethod(cls):
+    def wrapper(func):
+        setattr(cls, re.sub('^_', '', func.__name__), func)
+    return wrapper
+
+@setmethod(IPv4Network)
+def _intf(self, a=0):
+    return ip_interface(str(self[a])+'/'+str(self.prefixlen))
+
+@setmethod(IPv4Network)
+def _near(self, o=1):
+    return ip_network(str(ip_address(self.network_address) + \
+        o*self.num_addresses)+'/'+str(self.prefixlen))
+
+@setmethod(IPv4Network)
+def ___add__(self, o=1):
+    return ip_network(str(ip_address(self.network_address) + \
+        o*self.num_addresses)+'/'+str(self.prefixlen))
+
+def chunk(t, s=2):
+    return zip(*(iter(t),)*s)
 
 def checksid(func):
     def wrapper(*args, sid='', **kwargs):
@@ -139,7 +162,7 @@ def connect(cmd, sid=-1, tries=3,
         nopassword = False
         logged = False
         if not pinger(addr):
-            error = 'PING'
+            error = 'PING ('+addr+')'
             continue
         try:
             if sid < 0:
@@ -396,7 +419,7 @@ def pinger(host, timeout=1):
     return True if s == 0 else False
 
 def incrip(addr, i=1):
-    return str(ip_address(addr)+i)
+    return str(ip_address(addr)+int(i))
 
 def incrmac(mac, i=1):
      return re.sub(r'(..)(?!$)', r'\1:', f'{(int(mac.replace(":", ""), 16) + i):012X}')
@@ -408,9 +431,29 @@ def inbuffer(txt):
         txt = re.compile(r'(?i)'+re.escape(txt))
     return len(re.findall(txt, buffer.all()))
 
-def printf(file, text):
-    file.write(text)
-    print(text, end='', flush=True)
+def printf(file, *text, **kwargs):
+    file.write(' '.join(repr(i) for i in text))
+    print(*text, **kwargs)
+
+def dts(d):
+    p = {r'(\d+) years, (\d+) weeks, (\d+) days, (\d+) hours, (\d+) minutes':
+            [220752000, 604800, 86400, 3600, 60],
+         r'(\d+) weeks, (\d+) days, (\d+) hours, (\d+) minutes':
+            [604800, 86400, 3600, 60],
+         r'(\d+) days, (\d+) hours, (\d+) minutes': [86400, 3600, 60],
+         r'(\d+) hours, (\d+) minutes, (\d+) seconds': [3600, 60, 1],
+         r'(\d{2})y(\d{2})w(\d{2})d': [220752000, 604800, 86400],
+         r'(\d{2})w(\d{2})d(\d{2})h': [604800, 86400, 3600],
+         r'(\d{2})d(\d{2})h(\d{2})m': [86400, 3600, 60],
+         r'(\d{2})h(\d{2})m(\d{2})s': [3600, 60, 1],
+         r'(\d{2}):(\d{2}):(\d{2})': [3600, 60, 1]
+        }
+    for k,v in p.items():
+        try:
+            return sum([a*int(b) for a,b in zip(v,re.match(k,d).groups())])
+        except AttributeError: pass
+    else:
+        return None
 
 class t:
     def u(n=1):                 # up
