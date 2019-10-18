@@ -1,4 +1,4 @@
-#!/usr/bin/python3
+#!/usr/bin/env python3.7
 # -*- coding: utf-8 -*-
 
 import sys
@@ -23,16 +23,19 @@ def setmethod(cls):
     return wrapper
 
 @setmethod(IPv4Network)
-def _intf(self, a=0):
-    return ip_interface(str(self[a])+'/'+str(self.prefixlen))
+def _intf(self, i=0):
+    '''Takes network as list and item i as host and returns interface'''
+    return ip_interface(str(self[int(i)])+'/'+str(self.prefixlen))
 
 @setmethod(IPv4Network)
-def ___add__(self, o=1):
+def ___add__(self, i=1):
+    '''Shift network i-times'''
     return ip_network(str(ip_address(self.network_address) + \
-        o*self.num_addresses)+'/'+str(self.prefixlen))
+        int(i)*self.num_addresses)+'/'+str(self.prefixlen))
 
-def chunk(t, s=2):
-    return zip(*(iter(t),)*s)
+def chunk(t, i=2):
+    '''Takes list and returns list of tuples with i elements'''
+    return zip(*(iter(t),)*i)
 
 def checksid(func):
     def wrapper(*args, sid='', **kwargs):
@@ -96,7 +99,7 @@ class buffer:
     @staticmethod
     @checksid
     def last(sid=''):
-         return buffer(sid=sid).out[-1]
+         return buffer(sid=sid).out[-2]
     
     @staticmethod
     @checksid
@@ -275,8 +278,8 @@ def se(*args, sid='', flags='30'):
     pairs = zip(*[iter(args)]*2)
     for id, (cmds,exps) in enumerate(pairs):
         if type(cmds) != list:
-            cmds = str(cmds).strip().split('\n')
-        cmds = [str(i).strip() for i in cmds if i]
+            cmds = str(cmds).split('\n')
+        cmds = [str(i).lstrip() for i in cmds if i]
         ans = 0
         err = ''
         for cmd in cmds:
@@ -431,6 +434,7 @@ def printf(file, *text, **kwargs):
     print(*text, **kwargs)
 
 def dts(d):
+    '''Takes string, searches date and returns seconds. Otherwise None'''
     p = {r'(\d+) years, (\d+) weeks, (\d+) days, (\d+) hours, (\d+) minutes':
             [220752000, 604800, 86400, 3600, 60],
          r'(\d+) weeks, (\d+) days, (\d+) hours, (\d+) minutes':
