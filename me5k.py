@@ -1,4 +1,4 @@
-#!/usr/bin/python3
+#!/usr/bin/env python3.7
 # -*- coding: utf-8 -*-
 
 from python.pex import *
@@ -19,7 +19,7 @@ def isoffline():
 def confview(f):
     def wrap(*args, **kwargs):
         if isrootview():
-            se('-ns do ')
+            se('-ce do ')
         f(*args, **kwargs)
     return wrap
 
@@ -58,7 +58,7 @@ def inbufferlog(text):
 def getlogs(msg=''):
     confview(se)('show tech-support')
     confview(se)(f'copy fs://logs tftp://{host}/logs/tech-support/ vrf mgmt-intf')
-    print(f'\nError: {msg}')
+    print(f'\nError: {msg}') if msg else None
 
 def switchover():
     se('redundancy switchover', 'with the switchover', 'y')
@@ -185,4 +185,4 @@ def entercfg(filename, commitonexit=False, exitonerror=True):
     print(f'\nEntered {flen} lines with {int(flen/(now()-tstart))} lps')
 
 
-host = '192.168.16.22'
+host = '192.168.1.1'
