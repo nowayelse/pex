@@ -1,7 +1,7 @@
-#!/usr/bin/env python3.7
+#!/usr/bin/env python3.8
 # -*- coding: utf-8 -*-
 
-from python.pex import *
+from .pex import *
 
 def tping(addr, count=10):
     s,_ = getstatusoutput(f'for i in `seq 1 {count}`; '
@@ -63,11 +63,7 @@ def getlogs(msg=''):
 def switchover():
     se('redundancy switchover', 'with the switchover', 'y')
     var = r'(ot all services)|(is not allowed on slave)|(lave fmc is not found)'
-    ans = re.search(var, buffer.all())
-    if ans:
-        return ans.lastindex
-    else:
-        return 0
+    return ans.lastindex if (ans := re.search(var, buffer.all())) else 0
 
 def showtree(cmd):
     
@@ -95,7 +91,7 @@ def showtree(cmd):
             'all | VRF name WORD (1-31)': ['all', 'test'],
             'RD AS:Nr(0-4294967295:0-65535)': ['4294967295:65535'],
             'RD AS:Nr(0-65535:0-4294967295)': ['65535:4294967295'],
-            'RD IPv4:Nr(0-65535)': ['10.0.0.134:0'],
+            'RD IPv4:Nr(0-65535)': ['10.0.0.134:0', '10.0.0.26:0'],
             'RT': ['65535:4294967295', '4294967295:65535', '10.0.0.134:0'],
             'A.B.C.D:N': ['10.0.0.111:0'],
             'INTEGER': ['1'],
@@ -140,7 +136,7 @@ def showtree(cmd):
             else:
                 se(f'-c {cmd} ?')
                 shownext(gethelp(buffer.all()))
-        se('^w$')
+        se('-te w')
     
     cmds = []
     last = ['|', '<cr>']
@@ -149,10 +145,10 @@ def showtree(cmd):
     for i in cmd:
         se(f'-c show {i} ?')
         shownext(gethelp(buffer.all()))
-        se('^c')
+        se('-t c')
     return cmds
 
-def entercfg(filename, commitonexit=False, exitonerror=True):
+def entercfg(filename, commitonexit=False, exitonerror=True, startcmd=''):
     if not os.path.exists(filename):
         print(f'\nFile {filename} not exist')
         return False
@@ -163,6 +159,10 @@ def entercfg(filename, commitonexit=False, exitonerror=True):
         se('config')
     tstart = now()
     for num, cmd in enumerate(cmds):
+        if startcmd and not cmd.strip().startswith(startcmd):
+            continue
+        else:
+            startcmd = ''
         ans = se(cmd.strip(), [getprompt(), 'changes found'])
         if ans == 1:
             se('n')
@@ -185,4 +185,4 @@ def entercfg(filename, commitonexit=False, exitonerror=True):
     print(f'\nEntered {flen} lines with {int(flen/(now()-tstart))} lps')
 
 
-host = '192.168.1.1'
+host = '192.168.16.22'
