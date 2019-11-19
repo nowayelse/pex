@@ -1,4 +1,4 @@
-#!/usr/bin/env python3.7
+#!/usr/bin/env python3.8
 # -*- coding: utf-8 -*-
 
 import sys
@@ -9,7 +9,11 @@ from ipaddress import ip_address, ip_network, ip_interface, IPv4Network
 from io import StringIO
 from subprocess import getoutput, getstatusoutput
 from pkg_resources import parse_version
+from functools import partial
 
+''' Check module versions'''
+if sys.version_info[0:2] < (3,8):
+    exit('python version is lower than 3.8.0, please upgrade')
 try:
     from pexpect import *
     if parse_version(__version__) < parse_version('4.7.0'):
@@ -37,6 +41,8 @@ def chunk(t, i=2):
     '''Takes list and returns list of tuples with i elements'''
     return zip(*(iter(t),)*i)
 
+printn = partial(print, end='', flush=True)
+
 def checksid(func):
     def wrapper(*args, sid='', **kwargs):
         global lsid
@@ -59,7 +65,7 @@ class _spawn(spawn):
         self.__dict__.update(kwargs)
         self.exitcmds = ['exit', 'logout', 'quit']
         spawn.__init__(self, cmd, maxread=500000, encoding='utf-8')
-        self.setwinsize(1000, 1000)
+        self.setwinsize(*os.get_terminal_size()[::-1])
         self.delaybeforesend = 0.0
         self.delayafterread = 0.0
         self.ignorecase
@@ -67,6 +73,7 @@ class _spawn(spawn):
     
     def se(self, *args, **kwargs):
         se(*args, sid=self.sid, **kwargs)
+
 
 class buffer:
     
@@ -121,7 +128,7 @@ def connect(cmd, sid=-1, tries=3,
     
     def sp():
         return _spawn(scmd, pcmd=cmd, sid=sid, addr=addr,
-                       login=login, password=password, hostname=hostname)
+                    login=login, password=password, hostname=hostname)
     
     def parsecmd(cmd):
         pat = '^(?:(ssh|telnet):)?([\w.-]+)(?::(\d+))?$'
@@ -228,7 +235,7 @@ def connect(cmd, sid=-1, tries=3,
     if error:
         if error == 'AUTH':
             try:
-                se('^c$')
+                se('-te c')
             except: pass
             sids.remove(sids[sid])
         if con_roe:
@@ -268,7 +275,7 @@ def getprompt(sid='', hn=''):
 
 @checksid
 @setlsid
-def se(*args, sid='', flags='30'):
+def se(*args, sid='', f=''):
     if sid >= len(sids):
         exit('Sending to unopened sid: '+str(sid))
     if len(args) == 0:
@@ -279,48 +286,20 @@ def se(*args, sid='', flags='30'):
     for id, (cmds,exps) in enumerate(pairs):
         if type(cmds) != list:
             cmds = str(cmds).split('\n')
-        cmds = [str(i).lstrip() for i in cmds if i]
+        cmds = [str(i).lstrip() for i in cmds]
         ans = 0
         err = ''
         for cmd in cmds:
-            se_noexpect = False  # .$
-            se_resetexp = False  # .#
-            se_nocarret = False  # -c .
-            se_control = False   # ^.
-            se_sendslow = False  # -s .
-            se_noexit = False    # -x .
-            se_timeout = 600     # -t\d .
+            f, cmd = (m[1], m[2]) if (m := re.match(r'\-(\S*) ?(.*)', cmd)) \
+                else ('', cmd)
             se_interval = 0.01
-            
-            ''' Parse flags '''
-            pfx = pcmd = ''
-            pfx, _, pcmd = cmd.partition(' ')
-            if pfx[0] == '-':
-                cmd = pcmd
-                if 'c' in pfx:
-                    se_nocarret = True
-                if 's' in pfx:
-                    se_sendslow = True
-                if 'x' in pfx:
-                    se_noexit = True
-                if 't' in pfx:
-                    se_timeout = (re.findall(r'\d+', pfx) or [se_timeout])[0]
-            else:
-                pfx = ''
-            if cmd[0] == '^':
-                se_control = True
-                se_nocarret = True
-                cmd = cmd[1:]
-            if cmd[-1] == '$':
-                se_noexpect = True
-                cmd = cmd[:-1]
-            elif 'e' in pfx:
-                se_noexpect = True
-            elif cmd[-1] == '#':
-                se_resetexp = True
-                cmd = cmd[:-1]
-            elif 'r' in pfx:
-                se_resetexp = True
+            se_timeout  = (re.search(r'\d+', f) or [600])[0]
+            se_control  = 't' in f
+            se_nocarret = 'c' in f or se_control
+            se_noexpect = 'e' in f
+            se_sendslow = 's' in f
+            se_noexit   = 'x' in f
+            se_resetexp = 'r' in f
             
             ''' Sending '''
             try:
@@ -348,6 +327,8 @@ def se(*args, sid='', flags='30'):
                     ans = sids[sid].expect(sids[sid].prompt, timeout=int(se_timeout))
                 else:
                     ans = sids[sid].expect(exps, timeout=int(se_timeout))
+                if se_resetexp:
+                    expclear(sids[sid].prompt)
             except EOF:
                 if cmd in sids[sid].exitcmds:
                     err = 'EXITCMD'
@@ -360,9 +341,6 @@ def se(*args, sid='', flags='30'):
                 sids[sid].last = buffer.prompt()
             finally:
                 sids[sid].logfile_send = StringIO('')
-                if se_resetexp:
-                    sleep(0.5)
-                    expclear()
                 if type(exps) == list and len(exps) > 1:
                     if id < len(list(pairs))-1:
                         if len(cmds) > 1 or len(list(pairs)) > 1:
@@ -377,7 +355,7 @@ def se(*args, sid='', flags='30'):
 
 @checksid
 def expclear(ex=r'.*', sid=''):
-    sids[sid].expect(ex, timeout=1)
+    sids[sid].expect(ex, timeout=5)
 
 def switchecho(val=''):
     global lsid, sids
