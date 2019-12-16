@@ -3,15 +3,23 @@
 
 from .pex import *
 
-def tping(addr, count=10):
+@staticmethod
+@setmethod(Prompt)
+@checksid
+def _shell(hostname, sid=''):
+    name, sn = gethostname(hostname)
+    return r'\[\S+@'+name+r' \S+\] ?'
+
+def tping(addr, count=1):
     s,_ = getstatusoutput(f'for i in `seq 1 {count}`; '
                            'do sudo ip netns exec test_a '
                           f'ping {addr} -c 1 -w 1 >/dev/null 2>&1 '
                            '&& break; done')
     return True if s == 0 else False
 
-def isrootview():
-    return bool(re.search(sids[lsid].hname+r'\(config', buffer.prompt()))
+@checksid
+def isrootview(sid=''):
+    return bool(re.search(sids[sid].hname+r'\(config', buffer.prompt()))
 
 def isoffline():
     return bool(re.search(r'offline mode', buffer.prompt()))
@@ -23,19 +31,9 @@ def confview(f):
         f(*args, **kwargs)
     return wrap
 
-def shellprompt(sid=''):
-    global lsid, sids
-    if sid == '':
-        sid = lsid
-    else:
-        lsid = sid
-    hn = sids[sid].hostname
-    name,sn = (re.findall('(\S+)(\)|\#|\>|\$|\~)', hn) or [(hn, '')])[0]
-    sids[sid].prompt = r'\[root@'+name+r' \S+\]'
-
 class rootshell(): 
     def __enter__(self): 
-        shellprompt()
+        setprompt(type='shell')
         confview(se)('rootshell', 'assword:', 'password')
         if inbuffer('Authentication'):
             exit('Check rootshell password or SE logic')
@@ -43,16 +41,9 @@ class rootshell():
         setprompt()
         se('exit')
 
-@checksid
-@setlsid
-def shellprompt(sid=''):
-    hn = sids[sid].hostname
-    name,sn = (re.findall('(\S+)(\)|\#|\>|\$|\~)', hn) or [(hn, '')])[0]
-    sids[sid].prompt = r'\[root@'+name+r' \S+\]'
-
 def inbufferlog(text):
     with rootshell():
-        se(f'grep -E "{text}" /var/log/syslog/buffer* 2>/dev/null | head -5')
+        se(f'grep -E "{text}" /var/log/syslog/buffer* 2>/dev/null | grep -v took | head -5')
         return True if buffer.all() else False
 
 def getlogs(msg=''):
