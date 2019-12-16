@@ -9,7 +9,7 @@ from ipaddress import ip_address, ip_network, ip_interface, IPv4Network
 from io import StringIO
 from subprocess import getoutput, getstatusoutput
 from pkg_resources import parse_version
-from functools import partial
+from functools import partial, wraps
 
 ''' Check module versions'''
 if sys.version_info[0:2] < (3,8):
@@ -18,6 +18,8 @@ try:
     from pexpect import *
     if parse_version(__version__) < parse_version('4.7.0'):
         exit('pexpect version is lower than 4.7.0, please upgrade')
+    else:
+        from pexpect.fdpexpect import *
 except ImportError:
     exit('pexpect not found, install pexpect 4.7.0 or newer')
 
@@ -44,6 +46,7 @@ def chunk(t, i=2):
 printn = partial(print, end='', flush=True)
 
 def checksid(func):
+    @wraps(func)
     def wrapper(*args, sid='', **kwargs):
         global lsid
         if sid == '':
@@ -52,6 +55,7 @@ def checksid(func):
     return wrapper
 
 def setlsid(func):
+    @wraps(func)
     def wrapper(*args, sid='', **kwargs):
         global lsid
         if sid != '':
@@ -59,21 +63,34 @@ def setlsid(func):
         return func(*args, sid=sid, **kwargs)
     return wrapper
 
-class _spawn(spawn):
+class _spawn(fdspawn, spawn):
     
-    def __init__(self, cmd, **kwargs):
+    def __init__(self, scmd, **kwargs):
         self.__dict__.update(kwargs)
         self.exitcmds = ['exit', 'logout', 'quit']
-        spawn.__init__(self, cmd, maxread=500000, encoding='utf-8')
-        self.setwinsize(*os.get_terminal_size()[::-1])
+        if self.proc == 'serial':
+            scmd = os.open(self.addr, os.O_RDWR)
+            spm = fdspawn
+        else:
+            spm = spawn
+        spm.__init__(self, scmd, maxread=500000, encoding='utf-8')
+        if self.proc == 'serial':
+            self.ptyproc = ''
+        else:
+            self.setwinsize(*os.get_terminal_size()[::-1])
         self.delaybeforesend = 0.0
         self.delayafterread = 0.0
-        self.ignorecase
-        self.logfile_read = sys.stdout
     
     def se(self, *args, **kwargs):
         se(*args, sid=self.sid, **kwargs)
 
+class Prompt:
+    @staticmethod
+    @checksid
+    def basic(hostname, sid=''):
+        hn, sn = gethostname(hostname)
+        if sn: return hn+r'(?:(?!\n).)*'+sn
+        return hn+r'(?:(?!\n).)*(\)|\#|\>|\$|\~)'
 
 class buffer:
     
@@ -119,72 +136,70 @@ class buffer:
         return buffer(sid=sid).out[-1]+sids[sid].after
 
 
-def connect(cmd, sid=-1, tries=3,
-            con_roe=False,  # Retrurn on error if True else exits
-            con_wfn=False,  # Ignore netconf issues if True, else reconnect
-            hostname='EOS', login='admin', password='password', **kwargs):
+def connect(cmd='', proc='', addr='', port='', login='', password='',
+            hostname='', promptype = '', sid=-1, tries=3, con_timeout=50,
+            con_roe=False, # Return on error if True, else exits
+            con_wfn=False, # Ignore netconf issues if True, else reconnect
+            con_ser=False, # Destination is serial port
+            con_sil=False, # Silent connection
+            **kwargs):
     '''ex.: connect('192.168.17.26', hostname='EOS#')'''
     global sids, lsid
     
-    def sp():
-        return _spawn(scmd, pcmd=cmd, sid=sid, addr=addr,
-                    login=login, password=password, hostname=hostname)
+    def scmd():
+        if proc == 'serial':   return addr
+        elif proc == 'telnet': return f'{proc} {addr} {port}'
+        elif proc == 'ssh':    return f'{proc} {login}@{addr} -p{port}'
+        else:                  exit(f'{proc = }, is not a valid process')
     
     def parsecmd(cmd):
-        pat = '^(?:(ssh|telnet):)?([\w.-]+)(?::(\d+))?$'
+        '''Extract process, address and port from cmd string'''
+        pat = r'^(?:\b(ssh|telnet|serial)\b(?::\/\/| )?)?' \
+              '(?:(?:(\w+)(?::(\w+))?@)?([\w\/\.\-]+))?(?::(\d+))?$'
         try:
-            tproc, taddr, tport = re.findall(pat, cmd)[0]
-        except IndexError:
-            exit(f'Command line parse error: {cmd}')
-        proc = tproc or 'telnet'
-        addr = taddr
+            return re.findall(pat, cmd)[0]
+        except IndexError:     exit(f'{cmd = }, has invalid format')
+        
+    '''Validate and init params'''
+    if   type(cmd) != str:     exit(f'{cmd = }, command must be a string')
+    if   type(tries) != int:   exit(f'{tries = }, must be an integer')
+    elif tries < 1:            exit(f'{tries = }, must be greater than zero')
+    if   type(sid) != int:     exit(f'{sid = }, must be an integer')
+    p_proc, p_login, p_password, p_addr, p_port = parsecmd(cmd)
+    proc = proc or p_proc or 'telnet'
+    addr = addr or p_addr or ('/dev/ttyUSB0' if proc == 'serial' else '127.0.0.1')
+    if proc == 'serial':
+        if not os.path.exists(addr): exit(f'{addr = }, must be a valid file')
+        con_ser = True
+    else:
         try:
             ip_address(addr)
-        except ValueError:
-            exit(f'Command line address error: {addr}')
-        port = tport or ('23' if proc == 'telnet' else '22')
-        if proc == 'telnet':
-            return addr, f'{proc} {addr} {port}'
-        else:
-            return addr, f'{proc} {login}@{addr} -p{port}'
+        except ValueError:     exit(f'{addr = }, must be a valid ipv4 address')
+    port = port or p_port or ('23' if proc == 'telnet' else '22')
+    login = login or p_login or 'admin'
+    password = password or p_password or 'password'
+    hostname = hostname or 'EOS'
     
-    '''validate'''
-    if type(cmd) != str:
-        exit('Command must be a string')
-    if type(tries) != int:
-        exit('"tries" must be an integer')
-    elif tries < 1:
-        exit('"tries" must be greater than zero')
-    if type(sid) != int:
-        exit('"sid" must be an integer')
+    hname, _ = gethostname(hostname)
+    prompt = getprompt(hostname, type=promptype)
     
-    '''init vars'''
-    addr, scmd = parsecmd(cmd)
-    
+    '''Try to connect'''
     for append in range(tries):
         error = ''
-        nologin = False
-        nopassword = False
-        logged = False
-        if not pinger(addr):
+        nologin = nopassword = logged = False
+        if proc != 'serial' and not pinger(addr):
             error = 'PING ('+addr+')'
             continue
         try:
-            if sid < 0:
-                sid = len(sids)
-                sids.append(sp())
-            elif sid >= len(sids):
-                exsid = sid
-                sid = len(sids)
-                sids.append(sp())
-                if sid > len(sids):
-                    print(f'Sid is not {exsid}, but {sid}')
-            else:
-                sids[sid] = sp()
+            p = _spawn(scmd(), cmd=cmd, proc=proc, addr=addr, port=port,
+                    login=login, password=password, hostname=hostname,
+                    hname=hname, prompt=prompt, sid=sid, **kwargs)
         except Exception as e:
             exit(f'Spawn error: {e}')
-        lsid = sid
-        setprompt()
+        p.logfile_read = None if con_sil else sys.stdout
+        if con_ser:
+            sleep(0.2)
+            p.sendline('')
         exps = ['(nknown host)|(not known)',
                 'o route to host',
                 'onnection refused',
@@ -192,13 +207,13 @@ def connect(cmd, sid=-1, tries=3,
                 'sure you want to continue connecting',
                 '(ogin: ?$)|(ame: ?$)',
                 'sword: ?$',
-                sids[sid].prompt]
+                p.prompt]
         if not con_wfn:
             exps.append('etconf server doesn')
         r = error = ''
         while not error and not logged:
             try:
-                r = sids[sid].expect(exps, timeout=50)
+                r = p.expect(exps, timeout=con_timeout)
             except EOF:
                 error = 'EOF'
             except TIMEOUT:
@@ -209,22 +224,22 @@ def connect(cmd, sid=-1, tries=3,
                 error = 'REFUSED'
                 sleepx(5)
             elif r == 4:
-                sids[sid].send('yes\r')
+                p.send('yes\r')
             elif r == 5:
                 if nologin:
                     error = 'AUTH'
                 else:
                     nologin = True
-                    sids[sid].sendline(sids[sid].login)
+                    p.sendline(p.login)
             elif r == 6:
                 if nopassword:
                     error = 'AUTH'
                 else:
                     nologin = True
                     nopassword = True
-                    sids[sid].sendline(sids[sid].password)
+                    p.sendline(p.password)
             elif r == 7:
-                logged = True
+                logged = True; # got prompt 
             elif r == 8:
                 error = 'NETCONF'
         else:
@@ -233,23 +248,33 @@ def connect(cmd, sid=-1, tries=3,
             else:
                 continue
     if error:
+        '''Error while connecting'''
         if error == 'AUTH':
             try:
                 se('-te c')
             except: pass
-            sids.remove(sids[sid])
-        if con_roe:
-            return False
-        else:
-            exit('Exited due to '+error)
+            p.close()
+        return False if con_roe else exit('Exited due to '+error)
     else:
+        '''Connection done'''
+        if sid < 0:
+            sid = len(sids)
+            sids.append(p)
+        elif sid >= len(sids):
+            exsid = sid
+            sid = len(sids)
+            sids.append(p)
+            if sid > len(sids): print(f'Sid is {sid} instead of {exsid}')
+        else:
+            sids[sid] = p
+        lsid = sid
         return sids[sid]
 
 @checksid
 @setlsid
 def reconnect(cmd='', sid='', login='', password='', **kwargs):
     global sids
-    cmd = cmd if cmd else sids[sid].pcmd
+    cmd = cmd or sids[sid].pcmd
     try:
         cmd = cmd if cmd else sids[sid].pcmd
         login = login if login else sids[sid].login
@@ -258,20 +283,23 @@ def reconnect(cmd='', sid='', login='', password='', **kwargs):
         exit('lsid args unpack failed')
     return connect(cmd, sid=sid, login=login, password=password, **kwargs)
 
-@checksid
-def setprompt(sid='', hn=''):
-    if hn == '':
-        hn = sids[sid].hostname
-    name,sn = (re.findall('(\S+)(\)|\#|\>|\$|\~)', hn) or [(hn, '')])[0]
-    if sn:
-        sids[sid].prompt = name+r'(?:(?!\n).)*'+sn
-    else:
-        sids[sid].prompt = name+r'(?:(?!\n).)*(\)|\#|\>|\$|\~)'
-    sids[sid].hname=name
 
 @checksid
-def getprompt(sid='', hn=''):
-    return sids[sid].prompt
+def setprompt(hostname='', type='', sid=''):
+    hostname = hostname or sids[sid].hname
+    sids[sid].prompt = getprompt(hostname=hostname, type=type, sid=sid)
+
+@checksid
+def getprompt(hostname='', type='', sid=''):
+    if not hostname: return sids[sid].prompt
+    if type:
+        if hasattr(Prompt, type): return getattr(Prompt, type)(hostname)
+        else:                  exit(f'Can not set prompt by "{type}" method')
+    else: return Prompt.basic(hostname)
+
+def gethostname(hostname):
+    hpat = re.compile(r'^([A-Za-z][A-Za-z0-9-._]{0,62})(\)|\#|\>|\$|\~)?$')
+    return re.findall(hpat, hostname)[0]
 
 @checksid
 @setlsid
@@ -314,7 +342,7 @@ def se(*args, sid='', f=''):
                 if not se_nocarret:
                     sids[sid].send('\r')
             except Exception as e:
-                exit('Send error: '+e)
+                exit(f'Send error: {e}')
             
             ''' Expecting '''
             ans = -1
