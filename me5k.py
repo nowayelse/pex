@@ -17,6 +17,16 @@ def tping(addr, count=1):
                            '&& break; done')
     return True if s == 0 else False
 
+def lping(dst, src='', cnt=1, vrf=''):
+    for i in range(cnt):
+        se(f'ping {dst}' + \
+          (f' source {src}' if src else '') + \
+          (f' vrf {vrf}' if vrf else '') + \
+            'count 1')
+        if inbuffer('100 percent'): return True
+        sleep(3)
+    return False
+
 @checksid
 def isrootview(sid=''):
     return bool(re.search(sids[sid].hname+r'\(config', buffer.prompt()))
@@ -31,25 +41,27 @@ def confview(f):
         f(*args, **kwargs)
     return wrap
 
-class rootshell(): 
-    def __enter__(self): 
-        setprompt(type='shell')
-        confview(se)('rootshell', 'assword:', 'password')
-        if inbuffer('Authentication'):
-            exit('Check rootshell password or SE logic')
-    def __exit__(self, *args): 
-        setprompt()
-        se('exit')
+@contextmanager
+def rootshell():
+    setprompt(type='shell')
+    confview(se)('rootshell', 'assword:', 'password')
+    if inbuffer('Authentication'):
+        exit('Check rootshell password or SE logic')
+    yield
+    setprompt()
+    se('exit')
 
-def inbufferlog(text):
+def inbufferlog(text, ex=''):
     with rootshell():
-        se(f'grep -E "{text}" /var/log/syslog/buffer* 2>/dev/null | grep -v took | head -5')
+        se(f'grep -E "{text}" /var/log/syslog/buffer* 2>/dev/null '+ \
+           f'| grep -v "took|timed ou'+(f'|{ex}"' if ex else '"')+' | head -5')
         return True if buffer.all() else False
 
-def getlogs(msg=''):
+def getlogs(msg='', quit=True):
+    print(f'\nError: {msg}') if msg else None
     confview(se)('show tech-support')
     confview(se)(f'copy fs://logs tftp://{host}/logs/tech-support/ vrf mgmt-intf')
-    print(f'\nError: {msg}') if msg else None
+    if quit: exit(1)
 
 def switchover():
     se('redundancy switchover', 'with the switchover', 'y')
