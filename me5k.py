@@ -54,7 +54,7 @@ def rootshell():
 def inbufferlog(text, ex=''):
     with rootshell():
         se(f'grep -E "{text}" /var/log/syslog/buffer* 2>/dev/null '+ \
-           f'| grep -v "took|timed ou'+(f'|{ex}"' if ex else '"')+' | head -5')
+           f'| grep -Ev "took|timed ou'+(f'|{ex}"' if ex else '"')+' | head -5')
         return True if buffer.all() else False
 
 def getlogs(msg='', quit=True):
@@ -71,7 +71,8 @@ def switchover():
 def showtree(cmd):
     
     def gethelp(cmds):
-        return re.findall(r'  (\S(?:.*\S)?)  ', cmds)
+        out = re.findall(r'(?m)^  (\S+(?: \S+)*)', cmds)
+        return out
     
     def parsehelp(cmds):
         subs = {
@@ -112,7 +113,8 @@ def showtree(cmd):
             'SLOT <unit>/fmc<dev>': ['0/fmc0'],
             'Link state id': ['10.0.0.111'],
             'Period': [],
-            'Location': []
+            'Location': [],
+            'IF': ['0/0/1']
         }
         out = [] 
         if '<cr>' in cmds:
@@ -137,6 +139,7 @@ def showtree(cmd):
             if cmd == '<cr>':
                 cmds.append(buffer.cmd().strip())
             else:
+                expclear()
                 se(f'-c {cmd} ?')
                 shownext(gethelp(buffer.all()))
         se('-te w')
