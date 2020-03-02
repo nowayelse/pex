@@ -84,8 +84,8 @@ class _spawn(fdspawn, spawn):
         self.irows, self.icols = os.get_terminal_size()
         if self.proc == 'serial': self.ptyproc = ''
         else: self.setwinsize(self.icols, self.irows)
-        self.delaybeforesend = 0.0
-        self.delayafterread = 0.0
+        self.delaybeforesend = 0.01
+        self.delayafterread = 0.01
     
     def se(self, *args, **kwargs):
         se(*args, sid=self.sid, **kwargs)
@@ -109,11 +109,13 @@ class buffer:
         # return
         
         if pyte_ok:
-            screen = pyte.Screen(*os.get_terminal_size())
+            screen = pyte.Screen(os.get_terminal_size()[0], max_lines)
             stream = pyte.Stream(screen)
             screen.mode.add(pyte.modes.LNM)
-            stream.feed(sids[sid].before.replace('\r\r\n', '').replace('\r\n', 'CRNL'))
+            ss = sids[sid].before.replace('\r\r\n', '').replace('\r\n', 'CRNL')
+            stream.feed(ss)
             self.out = [i.rstrip() for i in ''.join(screen.display).split('CRNL')]
+            del screen, stream
         else:
             l,s,r = sids[sid].before.replace('\r\r\n', '').rpartition('\x1b')
             if l == '':
@@ -143,15 +145,12 @@ class buffer:
     @staticmethod
     @checksid
     def cmd(sid=''):
-        return buffer(sid=sid).out[0]
-        l,s,r = buffer(sid=sid).out[0].rpartition('\x1b[J')
-        l,s,r = r.partition('\x1b[')
-        return l
+        return buffer(sid=sid).out[0].lstrip()
     
     @staticmethod
     @checksid
     def last(sid=''):
-         return buffer(sid=sid).out[-2]
+        return '\n'.join(buffer(sid=sid).out[1:-1][-1:])
     
     @staticmethod
     @checksid
@@ -398,8 +397,6 @@ def se(*args, sid='', f=''):
             except TIMEOUT:
                 ans = -2
                 err = 'TIMEOUT '+str(se_timeout)
-            else:
-                sids[sid].last = buffer.prompt()
             finally:
                 sids[sid].logfile_send = StringIO('')
                 if type(exps) == list and len(exps) > 1:
@@ -530,4 +527,5 @@ class t:
 
 os.environ["TERM"] = "dumb"
 lsid = 0
+max_lines = 300                 # maximum lines for pyte terminal
 sids = []
